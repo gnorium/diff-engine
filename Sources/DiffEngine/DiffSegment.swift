@@ -1,16 +1,21 @@
-/// A segment of a diff result representing a contiguous run of characters
-/// that share the same change status.
+/// A segment of a diff result representing a contiguous run of text
+/// that shares the same change status.
 public enum DiffSegment: Sendable, Equatable {
-	/// Text present in both old and new
+	/// Text present in both old and new (no highlighting)
 	case unchanged(String)
-	/// Text present only in new (added)
-	case inserted(String)
-	/// Text present only in old (removed)
+	/// Specifically deleted word/chars within a deleted line (strong red highlight)
 	case deleted(String)
+	/// Specifically inserted word/chars within an inserted line (strong green highlight)
+	case inserted(String)
+	/// Unchanged text on a deleted line (subtle red line background)
+	case deletedContext(String)
+	/// Unchanged text on an inserted line (subtle green line background)
+	case insertedContext(String)
 
 	public var text: String {
 		switch self {
-		case .unchanged(let t), .inserted(let t), .deleted(let t):
+		case .unchanged(let t), .inserted(let t), .deleted(let t),
+			 .deletedContext(let t), .insertedContext(let t):
 			return t
 		}
 	}
