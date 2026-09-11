@@ -1,6 +1,6 @@
 /// A segment of a diff result representing a contiguous run of text
 /// that shares the same change status.
-public enum DiffSegment: Sendable, Equatable {
+public enum DiffSegment: Sendable {
   /// Text present in both old and new (no highlighting)
   case unchanged(String)
   /// Specifically deleted word/chars within a deleted line (strong red highlight)
@@ -20,3 +20,7 @@ public enum DiffSegment: Sendable, Equatable {
     }
   }
 }
+
+#if SERVER                                                                                                                                                                                                                                                            
+  extension DiffSegment: Equatable {}                                                                                                                                                                                                                                  
+#endif 
