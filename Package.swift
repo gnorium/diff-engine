@@ -17,15 +17,9 @@ let package = Package(
       targets: ["DiffEngine"]
     )
   ],
-  dependencies: [
-    .package(url: "https://github.com/gnorium/embedded-swift-utilities", branch: "main")
-  ],
   targets: [
     .target(
       name: "DiffEngine",
-      dependencies: [
-        .product(name: "EmbeddedSwiftUtilities", package: "embedded-swift-utilities")
-      ],
       swiftSettings: [
         .enableExperimentalFeature("Embedded", .when(platforms: [.wasi])),
         .enableUpcomingFeature("ExistentialAny"),

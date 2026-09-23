@@ -1,16 +1,16 @@
 # DiffEngine, as used in [gnorium.com](https://gnorium.com)
 
-Platform-agnostic character-level diff engine for Swift.
+Platform-agnostic diff engine for Swift: unified line diffs of source text and of rendered text.
 
 ## Overview
 
-DiffEngine computes character-level differences between two strings using Swift's `CollectionDifference`. Zero dependencies, works on all Apple platforms, Linux, and WebAssembly.
+DiffEngine computes line diffs with Swift's `CollectionDifference`, comparing byte for byte and never by Unicode equivalence — a precomposed é and an e with a combining accent are different characters in a diplomatic transcription. Zero dependencies; runs on all Apple platforms, Linux, and Embedded Swift WebAssembly.
 
 ## Features
 
-- **Character-Level Precision**: Diffs at the character level, not line level
-- **Pure Swift**: No Foundation dependency, no platform-specific code
-- **Simple API**: One function call, returns typed segments
+- **Unified line diffs**: every line with its old and new line number, the old lines of a change before the new, and hunks with context
+- **Rendered text**: lines of formatted runs, formulas and figures, so a line that only changed its formatting is a changed line
+- **Notes on what a reader cannot see**: a changed line paired with the line it replaced says when only spacing, look-alike characters, a figure's region or the kind of break parts them
 - **Cross-Platform**: macOS, iOS, watchOS, tvOS, visionOS, Linux, WASM
 
 ## Installation
@@ -41,34 +41,24 @@ Then add it to your target dependencies:
 ```swift
 import DiffEngine
 
-let segments = DiffEngine.diff(old: "hello world", new: "hello earth")
-
-for segment in segments {
-    switch segment {
-    case .unchanged(let text): print(text)
-    case .deleted(let text):   print("-\(text)")
-    case .inserted(let text):  print("+\(text)")
+let lines = DiffEngine.lines(old: pageBefore, new: pageAfter)
+for hunk in DiffEngine.hunks(lines, context: 3) {
+    for line in hunk {
+        // line.kind: .unchanged, .removed or .inserted
+        // line.content, line.oldNumber, line.newNumber, line.note
     }
 }
-// "hello " → unchanged
-// "wo"     → deleted
-// "ea"     → inserted
-// "r"      → unchanged
-// "ld"     → deleted
-// "th"     → inserted
+
+// Rendered text: lines of runs that carry their formatting.
+let rendered = DiffEngine.lines(
+    old: [.init(tokens: [.init(text: "N"), .init(text: "s")])],
+    new: [.init(tokens: [.init(text: "N"), .init(text: "s", style: ["sub"])])])
+// one removed line, one inserted line
 ```
 
-### DiffSegment
+### Note
 
-```swift
-public enum DiffSegment: Sendable, Equatable {
-    case unchanged(String)  // Present in both
-    case inserted(String)   // Added in new
-    case deleted(String)    // Removed from old
-
-    var text: String { ... }
-}
-```
+`.spacing`, `.lookalike`, `.region` or `.breakKind`: what parts a changed line from the line it replaced, when a reader could not see it.
 
 ## Requirements
 
