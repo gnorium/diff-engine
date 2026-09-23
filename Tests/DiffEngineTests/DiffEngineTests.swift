@@ -15,6 +15,67 @@ struct DiffEngineTests {
     }.joined()
   }
 
+  // MARK: - Outline numbers
+
+  /// A number's segments as the diff marks them: changed ones in brackets.
+  private func marked(_ segments: [DiffSegment]) -> String {
+    segments.map { segment in
+      switch segment {
+      case .unchanged(let text): return text
+      case .changed(let text): return "[\(text)]"
+      }
+    }.joined()
+  }
+
+  @Test func outlineChangesEveryLevelThatChanged() {
+    // Not "1.2 → 2.3" with a kept "2": the 2 was the second level and is now
+    // the first.
+    let pair = DiffEngine.outline(old: "1.2", new: "2.3")
+    #expect(marked(pair.old) == "[1.2]")
+    #expect(marked(pair.new) == "[2.3]")
+  }
+
+  @Test func outlineKeepsUnchangedLevels() {
+    let pair = DiffEngine.outline(old: "1.2.1", new: "2.3.1")
+    #expect(marked(pair.old) == "[1.2].1")
+    #expect(marked(pair.new) == "[2.3].1")
+  }
+
+  @Test func outlineChangesOnlyTheLastLevel() {
+    let pair = DiffEngine.outline(old: "1.3", new: "1.1")
+    #expect(marked(pair.old) == "1[.3]")
+    #expect(marked(pair.new) == "1[.1]")
+  }
+
+  @Test func outlineLevelsPastTheOtherEndAreChanged() {
+    let deeper = DiffEngine.outline(old: "1.2", new: "1.2.1")
+    #expect(marked(deeper.old) == "1.2")
+    #expect(marked(deeper.new) == "1.2[.1]")
+    let shallower = DiffEngine.outline(old: "2.1.3", new: "2")
+    #expect(marked(shallower.old) == "2[.1.3]")
+    #expect(marked(shallower.new) == "2")
+  }
+
+  @Test func outlineComparesLevelsWholeNotByDigit() {
+    let pair = DiffEngine.outline(old: "1.12", new: "1.2")
+    #expect(marked(pair.old) == "1[.12]")
+    #expect(marked(pair.new) == "1[.2]")
+  }
+
+  @Test func outlineFromNothing() {
+    let pair = DiffEngine.outline(old: "", new: "1.1")
+    #expect(pair.old.isEmpty)
+    #expect(marked(pair.new) == "[1.1]")
+  }
+
+  // MARK: - Text within a line
+
+  @Test func textChangesWordsThenLetters() {
+    let pair = DiffEngine.refine(old: "Gold-tooled binding", new: "Gilt-tooled binding")
+    #expect(marked(pair.old) == "G[o]l[d]-tooled binding")
+    #expect(marked(pair.new) == "G[i]l[t]-tooled binding")
+  }
+
   // MARK: - Source lines
 
   @Test func identicalTexts() {

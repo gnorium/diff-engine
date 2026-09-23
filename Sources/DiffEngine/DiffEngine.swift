@@ -255,6 +255,34 @@ public enum DiffEngine {
     return (before, after)
   }
 
+  /// Two outline numbers — 1.2, 2.3.1 — each split into the segments the
+  /// other kept and the ones that changed. A number is read by position, not
+  /// aligned: its first segment is the first level, whatever the other
+  /// number's first segment is, so 1.2 → 2.3 changes both levels rather than
+  /// keeping a "2" that moved from one level to the other. A segment is kept
+  /// or changed whole, the point before it with it; segments one number has
+  /// past the end of the other are changed.
+  public static func outline(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
+    let a = segments(old)
+    let b = segments(new)
+    func marked(_ own: [[UInt8]], against other: [[UInt8]]) -> [DiffSegment] {
+      var out: [DiffSegment] = []
+      for (index, segment) in own.enumerated() {
+        let text = String(decoding: (index == 0 ? [] : [0x2E]) + segment, as: UTF8.self)
+        let kept = index < other.count && other[index] == segment
+        append(kept ? .unchanged(text) : .changed(text), to: &out)
+      }
+      return out
+    }
+    return (marked(a, against: b), marked(b, against: a))
+  }
+
+  /// A number's segments, between its points.
+  static func segments(_ number: String) -> [[UInt8]] {
+    guard !number.isEmpty else { return [] }
+    return number.utf8.split(separator: 0x2E, omittingEmptySubsequences: false).map(Array.init)
+  }
+
   /// One change, character by character — or whole, when so little of it
   /// agrees that marking the agreement would only scatter the change.
   static func characters(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
