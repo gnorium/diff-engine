@@ -13,7 +13,7 @@
 ///
 /// Everything is compared byte for byte, never by Unicode equivalence. A
 /// precomposed é and an e followed by a combining accent are different
-/// characters in a diplomatic transcription, and a diff that normalised them
+/// characters in a diplomatic transcription, and a diff that normalized them
 /// would hide exactly the change a reader came to see. It also keeps the
 /// engine free of the Unicode tables Embedded Swift does not carry, so the
 /// same code runs on the server and in the browser.
