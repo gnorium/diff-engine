@@ -1,7 +1,7 @@
 /// Differences between two texts, line by line, as a unified diff has them:
 /// the lines both keep, and at each change the old lines then the new. A
 /// changed line paired with the line it replaced also says which of its
-/// characters changed — found word by word first, then within the words that
+/// characters changed—found word by word first, then within the words that
 /// differ, so a one-letter correction marks one letter and a rewritten phrase
 /// marks the phrase, not a scatter of letters that happen to agree.
 ///
@@ -230,8 +230,8 @@ public enum DiffEngine {
 
   /// Two lines' texts, each split into what the other kept and what changed.
   ///
-  /// Words first — words, runs of white space, and each punctuation mark on
-  /// its own — so a rewritten phrase is one change; then, within a change
+  /// Words first—words, runs of white space, and each punctuation mark on
+  /// its own—so a rewritten phrase is one change; then, within a change
   /// that kept at least half of its shorter side's characters, the
   /// characters, so a corrected letter is one letter. A space kept alone
   /// between two changes is folded into them.
@@ -255,7 +255,7 @@ public enum DiffEngine {
     return (before, after)
   }
 
-  /// Two outline numbers — 1.2, 2.3.1 — each split into the segments the
+  /// Two outline numbers—1.2, 2.3.1—each split into the segments the
   /// other kept and the ones that changed. A number is read by position, not
   /// aligned: its first segment is the first level, whatever the other
   /// number's first segment is, so 1.2 → 2.3 changes both levels rather than
@@ -283,7 +283,7 @@ public enum DiffEngine {
     return number.utf8.split(separator: 0x2E, omittingEmptySubsequences: false).map(Array.init)
   }
 
-  /// One change, character by character — or whole, when so little of it
+  /// One change, character by character—or whole, when so little of it
   /// agrees that marking the agreement would only scatter the change.
   static func characters(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
     let a = old.unicodeScalars.map { Array($0.utf8) }
@@ -313,7 +313,7 @@ public enum DiffEngine {
     return (before, after)
   }
 
-  /// Words, runs of white space, and each punctuation mark on its own — so
+  /// Words, runs of white space, and each punctuation mark on its own—so
   /// a change of one tag's attribute is a change of that value, not of the
   /// whole tag.
   public static func tokens(_ text: String) -> [String] {
@@ -367,7 +367,7 @@ public enum DiffEngine {
     return true
   }
 
-  /// A run of the edit script: something kept, or one change — what it took
+  /// A run of the edit script: something kept, or one change—what it took
   /// out and what it put in, by index.
   enum Group {
     case keep(old: Int, new: Int)
@@ -454,7 +454,7 @@ public enum DiffEngine {
 
     public let kind: Kind
     public let text: String
-    /// How it is set — "italic", "sub" — in a stable order.
+    /// How it is set—"italic", "sub"—in a stable order.
     public let style: [String]
 
     public init(kind: Kind = .text, text: String, style: [String] = []) {
@@ -481,8 +481,8 @@ public enum DiffEngine {
     }
   }
 
-  /// One line of rendered text: its runs, whether it opens a block — a
-  /// paragraph, a verse line, a heading — rather than following a line break,
+  /// One line of rendered text: its runs, whether it opens a block—a
+  /// paragraph, a verse line, a heading—rather than following a line break,
   /// and the part it plays: "heading", "stage", "forme-header", "page".
   public struct RenderedLine: Sendable {
     public let tokens: [Token]
