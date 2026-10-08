@@ -81,6 +81,9 @@ public enum DiffEngine {
     /// On a changed line paired with the one it replaced: what parts the two
     /// when a reader could not see it.
     public let note: Note?
+    /// Whether the line break ending it changed: put in (an inserted line)
+    /// or taken out (a removed one), where a change re-broke its lines.
+    public var breakChanged = false
 
     public var isChange: Bool {
       switch kind {
@@ -138,6 +141,12 @@ public enum DiffEngine {
     var removed: [Int] = []
     var added: [Int] = []
     func flush() {
+      if let block = reflowed() {
+        out += block
+        removed = []
+        added = []
+        return
+      }
       let paired = min(removed.count, added.count)
       var notes = [Note?](repeating: nil, count: max(removed.count, added.count))
       var oldSegments = removed.map { [DiffSegment.changed(text(a[$0]))] }
@@ -169,6 +178,45 @@ public enum DiffEngine {
       removed = []
       added = []
     }
+    /// A change that re-broke its lines—one line now several, or the same
+    /// text indented anew—compared as one block, so only what it put in or
+    /// took out is marked, the line breaks with it: its text alike but for
+    /// white space, or, over a different number of lines, `similar`. Nil
+    /// for any other change, whose lines are paired one by one.
+    func reflowed() -> [Line<C>]? {
+      guard !removed.isEmpty, !added.isEmpty else { return nil }
+      let before = join(removed.map { text(a[$0]) }, separator: "\n")
+      let after = join(added.map { text(b[$0]) }, separator: "\n")
+      // The same text, changed only in how it is set (its style, a
+      // figure's region, the kind of break): the pairs say how.
+      guard Array(before.utf8) != Array(after.utf8) else { return nil }
+      let spacing = withoutSpaces(before) == withoutSpaces(after)
+      guard
+        spacing
+          || (removed.count != added.count && before.utf8.count <= Self.reflowLimit
+            && after.utf8.count <= Self.reflowLimit && similar(before, after))
+      else { return nil }
+      let pair = refine(old: before, new: after)
+      let oldLines = Self.split(pair.old)
+      let newLines = Self.split(pair.new)
+      guard oldLines.count == removed.count, newLines.count == added.count else { return nil }
+      var block: [Line<C>] = []
+      for (k, i) in removed.enumerated() {
+        var line = Line(
+          kind: .removed, content: a[i], segments: oldLines[k].segments, oldNumber: i + 1, newNumber: nil,
+          note: spacing ? .spacing : nil)
+        line.breakChanged = oldLines[k].breakChanged
+        block.append(line)
+      }
+      for (k, j) in added.enumerated() {
+        var line = Line(
+          kind: .inserted, content: b[j], segments: newLines[k].segments, oldNumber: nil, newNumber: j + 1,
+          note: spacing ? .spacing : nil)
+        line.breakChanged = newLines[k].breakChanged
+        block.append(line)
+      }
+      return block
+    }
     for edit in edits(old: keys.0, new: keys.1) {
       switch edit {
       case .keep(let i, let j):
@@ -185,6 +233,35 @@ public enum DiffEngine {
       }
     }
     flush()
+    return out
+  }
+
+  /// The longest block, in bytes, a change of a different number of lines
+  /// is compared whole within: past it, the comparison's cost outweighs the
+  /// marks.
+  static let reflowLimit = 4096
+
+  /// A block's segments, split back into its lines at its line feeds: each
+  /// line's own, and whether the break ending it changed.
+  static func split(_ segments: [DiffSegment]) -> [(segments: [DiffSegment], breakChanged: Bool)] {
+    var out: [(segments: [DiffSegment], breakChanged: Bool)] = []
+    var current: [DiffSegment] = []
+    for segment in segments {
+      let changed: Bool
+      switch segment {
+      case .unchanged: changed = false
+      case .changed: changed = true
+      }
+      let parts = splitLines(segment.text)
+      for (index, part) in parts.enumerated() {
+        if !part.utf8.isEmpty { append(changed ? .changed(part) : .unchanged(part), to: &current) }
+        if index < parts.count - 1 {
+          out.append((current, changed))
+          current = []
+        }
+      }
+    }
+    out.append((current, false))
     return out
   }
 
@@ -435,9 +512,12 @@ public enum DiffEngine {
     return folded
   }
 
-  static func join(_ parts: [String]) -> String {
+  static func join(_ parts: [String], separator: String = "") -> String {
     var out = ""
-    for part in parts { out += part }
+    for (index, part) in parts.enumerated() {
+      if index > 0 { out += separator }
+      out += part
+    }
     return out
   }
 

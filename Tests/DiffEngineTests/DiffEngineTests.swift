@@ -324,4 +324,44 @@ struct DiffEngineTests {
     let lines = DiffEngine.lines(old: old, new: new)
     #expect(lines[0].segments == [.unchanged("of "), .changed("N"), .unchanged("s")])
   }
+
+  // MARK: - Re-broken lines
+
+  /// A line's text as the diff marks it, changed stretches in brackets, a
+  /// changed break as "⏎".
+  private func marks<C>(_ lines: [DiffEngine.Line<C>]) -> [String] {
+    lines.map { line in
+      let kind = line.kind == .removed ? "-" : (line.kind == .inserted ? "+" : "=")
+      return kind + marked(line.segments) + (line.breakChanged ? "[⏎]" : "")
+    }
+  }
+
+  @Test func indentationAloneMarksOnlyTheSpaces() {
+    let lines = DiffEngine.lines(old: "<s>\n<w>a</w>\n</s>", new: "<s>\n  <w>a</w>\n</s>")
+    #expect(marks(lines) == ["=<s>", "-<w>a</w>", "+[  ]<w>a</w>", "=</s>"])
+  }
+
+  @Test func oneLineReflowedMarksOnlyTheBreaksAndIndent() {
+    let lines = DiffEngine.lines(
+      old: "<s><w>AN</w> <w>ETYMOLOGICAL</w><lb/></s>",
+      new: "<s>\n  <w>AN</w>\n  <w>ETYMOLOGICAL</w>\n  <lb/>\n</s>")
+    #expect(
+      marks(lines) == [
+        // The space that stood between the words is kept: the new line's
+        // indent holds it, and only the break and one more space are new.
+        "-<s><w>AN</w> <w>ETYMOLOGICAL</w><lb/></s>",
+        "+<s>[⏎]", "+[  ]<w>AN</w>[⏎]", "+[ ] <w>ETYMOLOGICAL</w>[⏎]", "+[  ]<lb/>[⏎]", "+</s>",
+      ])
+    for line in lines { #expect(line.note.map { "\($0)" } == "spacing") }
+  }
+
+  @Test func severalLinesJoinedMarkOnlyTheBreaksTakenOut() {
+    let lines = DiffEngine.lines(old: "a\n  b", new: "a b")
+    #expect(marks(lines) == ["-a[⏎]", "-[ ] b", "+a b"])
+  }
+
+  @Test func aReflowWithAnEditMarksTheEditToo() {
+    let lines = DiffEngine.lines(old: "<w>Been</w> <w>thus</w>", new: "<w>Been</w>\n<w>thys</w>")
+    #expect(marks(lines) == ["-<w>Been</w>[ ]<w>th[u]s</w>", "+<w>Been</w>[⏎]", "+<w>th[y]s</w>"])
+  }
 }
