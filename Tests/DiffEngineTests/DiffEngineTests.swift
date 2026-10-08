@@ -92,6 +92,46 @@ struct DiffEngineTests {
     #expect(lines[1].note == nil)
   }
 
+  @Test func dissimilarLinesStandWhole() {
+    // Not one line edited: two bullets that share a scatter of letters.
+    let old = "• footnotes\u{2014}footnotes: <note place=\"foot\">"
+    let new = "• provenance\u{2014}marks this copy\u{2019}s owners or keepers added: <provenance>"
+    let lines = DiffEngine.lines(old: "a\n\(old)\nz", new: "a\n\(new)\nz")
+    #expect(kinds(lines) == "=-+=")
+    #expect(marked(lines[1].segments) == "[\(old)]")
+    #expect(marked(lines[2].segments) == "[\(new)]")
+  }
+
+  @Test func similarLinesArePaired() {
+    let lines = DiffEngine.lines(old: "Gold-tooled binding", new: "Gilt-tooled binding")
+    #expect(marked(lines[0].segments) == "G[o]l[d]-tooled binding")
+    #expect(marked(lines[1].segments) == "G[i]l[t]-tooled binding")
+  }
+
+  @Test func similarityIsHalfTheLongerLine() {
+    // "abcd" keeps 2 of "abxy": half, paired; 2 of "abxyz": under half.
+    #expect(DiffEngine.similar("abcd", "abxy"))
+    #expect(!DiffEngine.similar("abcd", "abxyz"))
+    #expect(DiffEngine.similar("", ""))
+    #expect(!DiffEngine.similar("", "a"))
+  }
+
+  @Test func dissimilarFirstPairDoesNotStopTheNext() {
+    let lines = DiffEngine.lines(old: "alpha beta\nthe quick fox", new: "zzzz\nthe quick cat")
+    #expect(kinds(lines) == "--++")
+    #expect(marked(lines[0].segments) == "[alpha beta]")
+    #expect(marked(lines[2].segments) == "[zzzz]")
+    #expect(marked(lines[1].segments) == "the quick [fox]")
+  }
+
+  @Test func lookalikeShortLinesStillPair() {
+    let lines = DiffEngine.lines(old: "\u{2013}", new: "\u{2014}")
+    guard case .lookalike? = lines[0].note else {
+      Issue.record("expected a look-alike note")
+      return
+    }
+  }
+
   @Test func removalsComeBeforeInsertions() {
     let lines = DiffEngine.lines(old: "a\nb\nc\nd", new: "a\nx\ny\nd")
     #expect(kinds(lines) == "=--++=")

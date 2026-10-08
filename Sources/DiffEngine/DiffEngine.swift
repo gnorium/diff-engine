@@ -129,7 +129,8 @@ public enum DiffEngine {
 
   /// The lines of both texts in unified order, pairing each change's k-th
   /// removed line with its k-th inserted one for the note and the
-  /// characters that changed.
+  /// characters that changed—when the two are `similar`, or parted only by
+  /// something a note names; otherwise each stands whole.
   static func unified<C: Sendable>(
     _ a: [C], _ b: [C], keys: ([[UInt8]], [[UInt8]]), text: (C) -> String, note: (C, C) -> Note?
   ) -> [Line<C>] {
@@ -142,8 +143,14 @@ public enum DiffEngine {
       var oldSegments = removed.map { [DiffSegment.changed(text(a[$0]))] }
       var newSegments = added.map { [DiffSegment.changed(text(b[$0]))] }
       for k in 0..<paired {
-        notes[k] = note(a[removed[k]], b[added[k]])
-        let pair = refine(old: text(a[removed[k]]), new: text(b[added[k]]))
+        let x = text(a[removed[k]])
+        let y = text(b[added[k]])
+        let parting = note(a[removed[k]], b[added[k]])
+        // Two lines that share little are two changes, not one line edited:
+        // marking their few common letters would only scatter the change.
+        guard parting != nil || similar(x, y) else { continue }
+        notes[k] = parting
+        let pair = refine(old: x, new: y)
         oldSegments[k] = pair.old
         newSegments[k] = pair.new
       }
@@ -179,6 +186,21 @@ public enum DiffEngine {
     }
     flush()
     return out
+  }
+
+  /// Whether two lines are close enough to be read as one line edited: the
+  /// characters they share, in order, are at least half of the longer one.
+  /// Below that a removed line and an inserted one stand whole.
+  public static func similar(_ old: String, _ new: String) -> Bool {
+    let a = old.unicodeScalars.map { Array($0.utf8) }
+    let b = new.unicodeScalars.map { Array($0.utf8) }
+    let longer = max(a.count, b.count)
+    guard longer > 0 else { return true }
+    var kept = 0
+    for edit in edits(old: a, new: b) {
+      if case .keep = edit { kept += 1 }
+    }
+    return kept * 2 >= longer
   }
 
   /// The note two differing lines of text earn, if any.
