@@ -311,6 +311,9 @@ public enum DiffEngine {
   }
 
   static func splitLines(_ text: String) -> [String] {
+    // No text is no lines, not one empty line: a page that had no markup
+    // diffs as all added, never with a removed blank first (user, 2026-10-10).
+    if text.utf8.isEmpty { return [] }
     var out: [String] = []
     var current: [UInt8] = []
     for byte in text.utf8 {

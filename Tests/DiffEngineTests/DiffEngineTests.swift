@@ -27,6 +27,13 @@ struct DiffEngineTests {
     }.joined()
   }
 
+  @Test func anEmptyTextHasNoLines() {
+    // A page that had no markup: every line added, no removed blank line.
+    let lines = DiffEngine.lines(old: "", new: "<pb/>\n<p>a</p>")
+    #expect(lines.count == 2)
+    #expect(DiffEngine.lines(old: "", new: "").isEmpty)
+  }
+
   @Test func outlineChangesEveryLevelThatChanged() {
     // Not "1.2 → 2.3" with a kept "2": the 2 was the second level and is now
     // the first.
@@ -138,7 +145,8 @@ struct DiffEngineTests {
   }
 
   @Test func emptyTexts() {
-    #expect(kinds(DiffEngine.lines(old: "", new: "abc")) == "-+")
+    // No text is no lines: an empty old text diffs as all added.
+    #expect(kinds(DiffEngine.lines(old: "", new: "abc")) == "+")
     #expect(kinds(DiffEngine.lines(old: "abc", new: "abc\ndef")) == "=+")
   }
 
