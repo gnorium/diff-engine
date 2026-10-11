@@ -115,12 +115,30 @@ struct DiffEngineTests {
     #expect(marked(lines[1].segments) == "G[i]l[t]-tooled binding")
   }
 
-  @Test func similarityIsHalfTheLongerLine() {
-    // "abcd" keeps 2 of "abxy": half, paired; 2 of "abxyz": under half.
+  @Test func similarityIsHalfTheLongerLineOrTheShorterInWords() {
+    // "abcd" keeps 2 of "abxy": half the longer, paired; 2 of "abxyz": under.
     #expect(DiffEngine.similar("abcd", "abxy"))
     #expect(!DiffEngine.similar("abcd", "abxyz"))
+    // A line that only grew keeps every word of the shorter: paired.
+    #expect(DiffEngine.similar("A gap is a space.", "A gap is a space. A blank line is a space too, counted in lines."))
     #expect(DiffEngine.similar("", ""))
     #expect(!DiffEngine.similar("", "a"))
+  }
+
+  @Test func aRewrittenPhraseIsMarkedWholeNotByScatteredLetters() {
+    let pair = DiffEngine.refine(
+      old: "it spans; blank lines left inside a block are <space/>.",
+      new: "it spans. Where the page leaves a visible vertical gap within its text, record it with <space/>.")
+    #expect(marked(pair.old) == "it spans[; blank lines left inside] a [block are] <space/>.")
+  }
+
+  @Test func aLineThatGrewMarksOnlyWhatWasAdded() {
+    let lines = DiffEngine.lines(
+      old: "It spans; blank lines are <space/>. Never type extra spaces.",
+      new: "It spans. Where the page leaves a vertical gap within its text, record it with <space/>. Never type extra spaces.")
+    #expect(kinds(lines) == "-+")
+    #expect(marked(lines[0].segments).hasPrefix("It spans"))
+    #expect(marked(lines[1].segments).hasPrefix("It spans"))
   }
 
   @Test func dissimilarFirstPairDoesNotStopTheNext() {

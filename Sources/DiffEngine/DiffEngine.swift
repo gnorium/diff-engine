@@ -265,9 +265,14 @@ public enum DiffEngine {
     return out
   }
 
-  /// Whether two lines are close enough to be read as one line edited: the
-  /// characters they share, in order, are at least half of the longer one.
-  /// Below that a removed line and an inserted one stand whole.
+  /// Whether two lines are close enough to be read as one line edited:
+  /// the characters they share, in order, are at least half of the longer
+  /// one; or the whole words they share hold at least half of the shorter
+  /// one's characters, so a line that only grew keeps its unchanged words
+  /// unmarked (user, 2026-10-11: a sentence added to a prompt line marked
+  /// the whole line). Letters two different words happen to share never
+  /// pair lines by themselves. Below that a removed line and an inserted
+  /// one stand whole.
   public static func similar(_ old: String, _ new: String) -> Bool {
     let a = old.unicodeScalars.map { Array($0.utf8) }
     let b = new.unicodeScalars.map { Array($0.utf8) }
@@ -277,7 +282,15 @@ public enum DiffEngine {
     for edit in edits(old: a, new: b) {
       if case .keep = edit { kept += 1 }
     }
-    return kept * 2 >= longer
+    if kept * 2 >= longer { return true }
+    let shorter = min(a.count, b.count)
+    guard shorter > 0 else { return false }
+    let words = tokens(old)
+    var keptWords = 0
+    for edit in edits(old: words.map { Array($0.utf8) }, new: tokens(new).map { Array($0.utf8) }) {
+      if case .keep(let i, _) = edit, !isSpace(words[i]) { keptWords += words[i].unicodeScalars.count }
+    }
+    return keptWords * 2 >= shorter
   }
 
   /// The note two differing lines of text earn, if any.
@@ -334,7 +347,7 @@ public enum DiffEngine {
   ///
   /// Words first—words, runs of white space, and each punctuation mark on
   /// its own—so a rewritten phrase is one change; then, within a change
-  /// that kept at least half of its shorter side's characters, the
+  /// that kept at least half of its longer side's characters, the
   /// characters, so a corrected letter is one letter. A space kept alone
   /// between two changes is folded into them.
   public static func refine(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
@@ -398,7 +411,11 @@ public enum DiffEngine {
     for edit in script {
       if case .keep = edit { kept += 1 }
     }
-    guard kept * 2 >= min(a.count, b.count) else { return ([.changed(old)], [.changed(new)]) }
+    // Text against text: half of the longer side, or a rewritten phrase
+    // scatters into the letters it happens to share. White space against
+    // white space (a reflow): half of the shorter, so a kept space shows.
+    let measure = isSpace(old) && isSpace(new) ? min(a.count, b.count) : max(a.count, b.count)
+    guard kept * 2 >= measure else { return ([.changed(old)], [.changed(new)]) }
     var before: [DiffSegment] = []
     var after: [DiffSegment] = []
     for edit in script {
