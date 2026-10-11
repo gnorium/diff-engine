@@ -4,8 +4,8 @@
 /// thresholds (user, 2026-10-11): Myers on lines; within a change, the k-th
 /// removed line paired with the k-th added one; within a pair, Myers on its
 /// tokens (words, white space runs, each punctuation mark), the tokens that
-/// differ marked; and where one token was replaced by one of its kind, Myers
-/// on its characters, so a corrected letter is one letter.
+/// differ marked whole, and diff-match-patch's semantic cleanup folding the
+/// short equalities between changes into them.
 ///
 /// Source text is diffed as its lines of characters; rendered text as its
 /// lines of runs, so a line that changed only its formatting is a changed
@@ -303,55 +303,130 @@ public enum DiffEngine {
   /// Two lines' texts, each split into what the other kept and what changed.
   ///
   /// Myers on tokens—words, runs of white space, and each punctuation mark
-  /// on its own—each token that differs marked, so a rewritten phrase is
-  /// marked whole; where a change is one token replaced by one of its kind
-  /// (a word by a word, white space by white space), Myers on its
-  /// characters, so a corrected letter is one letter.
+  /// on its own—each token that differs marked whole, as git's word diff and
+  /// GitHub's word highlighting mark it: never part of a word (user,
+  /// 2026-10-11), so a corrected letter marks its word. Then the semantic
+  /// cleanup of Neil Fraser's diff-match-patch (`cleanupSemantic`): an
+  /// equality no longer than the edits on both sides of it is folded into
+  /// them, so the spaces and commas kept between changed words do not cut a
+  /// changed run into pieces ("pink, red, orange" against "red, orange,
+  /// pink" reads as one change, not a word here and a comma there).
   public static func refine(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
     let a = tokens(old)
     let b = tokens(new)
+    var diffs: [(Operation, String)] = []
+    for edit in edits(old: a.map { Array($0.utf8) }, new: b.map { Array($0.utf8) }) {
+      switch edit {
+      case .keep(let i, _): diffs.append((.equal, a[i]))
+      case .delete(let i): diffs.append((.delete, a[i]))
+      case .insert(let j): diffs.append((.insert, b[j]))
+      }
+    }
     var before: [DiffSegment] = []
     var after: [DiffSegment] = []
-    let script = edits(old: a.map { Array($0.utf8) }, new: b.map { Array($0.utf8) })
-    let all = groups(script)
-    // A change runs from one kept word to the next: white space kept
-    // inside it parts its tokens but does not end it. Only a change that
-    // is one word replaced by one word (or white space by white space) is
-    // marked by its characters.
-    var index = 0
-    while index < all.count {
-      if case .keep(let i, _) = all[index] {
-        append(.unchanged(a[i]), to: &before)
-        append(.unchanged(a[i]), to: &after)
-        index += 1
-        continue
+    for (operation, text) in cleanupSemantic(merged(diffs)) {
+      switch operation {
+      case .equal:
+        append(.unchanged(text), to: &before)
+        append(.unchanged(text), to: &after)
+      case .delete:
+        append(.changed(text), to: &before)
+      case .insert:
+        append(.changed(text), to: &after)
       }
-      var end = index + 1
-      while end + 1 < all.count, case .keep(let i, _) = all[end], isSpace(a[i]), case .change = all[end + 1] {
-        end += 2
-      }
-      let run = all[index..<end]
-      if end == index + 1, case .change(let removed, let added) = all[index], removed.count == 1, added.count == 1,
-        isSpace(a[removed[0]]) == isSpace(b[added[0]])
-      {
-        let letters = characters(old: a[removed[0]], new: b[added[0]])
-        for segment in letters.old { append(segment, to: &before) }
-        for segment in letters.new { append(segment, to: &after) }
-      } else {
-        for group in run {
-          switch group {
-          case .keep(let i, _):
-            append(.unchanged(a[i]), to: &before)
-            append(.unchanged(a[i]), to: &after)
-          case .change(let removed, let added):
-            for i in removed { append(.changed(a[i]), to: &before) }
-            for j in added { append(.changed(b[j]), to: &after) }
-          }
-        }
-      }
-      index = end
     }
     return (before, after)
+  }
+
+  /// One step of a diff as diff-match-patch writes it.
+  enum Operation: Equatable {
+    case equal, delete, insert
+  }
+
+  /// The length diff-match-patch measures a text by: its characters (here,
+  /// its Unicode scalars).
+  static func length(_ text: String) -> Int {
+    var count = 0
+    for _ in text.unicodeScalars { count += 1 }
+    return count
+  }
+
+  /// diff-match-patch's `cleanupSemantic`, its first pass (Neil Fraser,
+  /// https://github.com/google/diff-match-patch, `diff_cleanupSemantic`):
+  /// walk the equalities; where one is no longer than the larger of the
+  /// edits before it and no longer than the larger of the edits after it,
+  /// split it into a deletion and an insertion of its text, step back to
+  /// the equality before, and go on; then merge (`merged`). Its later
+  /// passes shift and split edits by characters, which whole tokens never
+  /// need.
+  static func cleanupSemantic(_ input: [(Operation, String)]) -> [(Operation, String)] {
+    var diffs = input
+    var changes = false
+    var equalities: [Int] = []
+    var lastEquality: String? = nil
+    var pointer = 0
+    var insertions1 = 0, deletions1 = 0, insertions2 = 0, deletions2 = 0
+    while pointer < diffs.count {
+      if diffs[pointer].0 == .equal {
+        equalities.append(pointer)
+        insertions1 = insertions2
+        deletions1 = deletions2
+        insertions2 = 0
+        deletions2 = 0
+        lastEquality = diffs[pointer].1
+      } else {
+        if diffs[pointer].0 == .insert { insertions2 += length(diffs[pointer].1) } else {
+          deletions2 += length(diffs[pointer].1)
+        }
+        if let equality = lastEquality, length(equality) <= max(insertions1, deletions1),
+          length(equality) <= max(insertions2, deletions2), let at = equalities.last
+        {
+          diffs.insert((.delete, equality), at: at)
+          diffs[at + 1] = (.insert, equality)
+          equalities.removeLast()
+          if !equalities.isEmpty { equalities.removeLast() }
+          pointer = equalities.last ?? -1
+          insertions1 = 0
+          deletions1 = 0
+          insertions2 = 0
+          deletions2 = 0
+          lastEquality = nil
+          changes = true
+        }
+      }
+      pointer += 1
+    }
+    return changes ? merged(diffs) : diffs
+  }
+
+  /// diff-match-patch's `cleanupMerge`, for whole tokens: between two
+  /// equalities, everything taken out as one deletion and then everything
+  /// put in as one insertion; neighboring equalities joined.
+  static func merged(_ diffs: [(Operation, String)]) -> [(Operation, String)] {
+    var out: [(Operation, String)] = []
+    var deleted = ""
+    var inserted = ""
+    func flush() {
+      if !deleted.isEmpty { out.append((.delete, deleted)) }
+      if !inserted.isEmpty { out.append((.insert, inserted)) }
+      deleted = ""
+      inserted = ""
+    }
+    for (operation, text) in diffs {
+      switch operation {
+      case .delete: deleted += text
+      case .insert: inserted += text
+      case .equal:
+        flush()
+        if let last = out.last, last.0 == .equal {
+          out[out.count - 1] = (.equal, last.1 + text)
+        } else if !text.isEmpty {
+          out.append((.equal, text))
+        }
+      }
+    }
+    flush()
+    return out
   }
 
   /// Two outline numbers—1.2, 2.3.1—each split into the segments the
@@ -380,30 +455,6 @@ public enum DiffEngine {
   static func segments(_ number: String) -> [[UInt8]] {
     guard !number.isEmpty else { return [] }
     return number.utf8.split(separator: 0x2E, omittingEmptySubsequences: false).map(Array.init)
-  }
-
-  /// One token replaced by another, character by character (Myers).
-  static func characters(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
-    let a = old.unicodeScalars.map { Array($0.utf8) }
-    let b = new.unicodeScalars.map { Array($0.utf8) }
-    guard !a.isEmpty, !b.isEmpty else {
-      return (a.isEmpty ? [] : [.changed(old)], b.isEmpty ? [] : [.changed(new)])
-    }
-    let script = edits(old: a, new: b)
-    var before: [DiffSegment] = []
-    var after: [DiffSegment] = []
-    for edit in script {
-      switch edit {
-      case .keep(let i, _):
-        append(.unchanged(String(decoding: a[i], as: UTF8.self)), to: &before)
-        append(.unchanged(String(decoding: a[i], as: UTF8.self)), to: &after)
-      case .delete(let i):
-        append(.changed(String(decoding: a[i], as: UTF8.self)), to: &before)
-      case .insert(let j):
-        append(.changed(String(decoding: b[j], as: UTF8.self)), to: &after)
-      }
-    }
-    return (before, after)
   }
 
   /// Words, runs of white space, and each punctuation mark on its own—so
