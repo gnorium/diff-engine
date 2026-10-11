@@ -99,14 +99,17 @@ struct DiffEngineTests {
     #expect(lines[1].note == nil)
   }
 
-  @Test func dissimilarLinesStandWhole() {
-    // Not one line edited: two bullets that share a scatter of letters.
+  @Test func pairedLinesMarkTheirTokens() {
+    // Paired as any k-th removed and k-th added line are, no threshold:
+    // the tokens that differ marked, the ones both keep not.
     let old = "• footnotes\u{2014}footnotes: <note place=\"foot\">"
     let new = "• provenance\u{2014}marks this copy\u{2019}s owners or keepers added: <provenance>"
     let lines = DiffEngine.lines(old: "a\n\(old)\nz", new: "a\n\(new)\nz")
     #expect(kinds(lines) == "=-+=")
-    #expect(marked(lines[1].segments) == "[\(old)]")
-    #expect(marked(lines[2].segments) == "[\(new)]")
+    // "footnotes" for "provenance" between the kept bullet and dash: one
+    // word for one word, marked by its letters.
+    #expect(marked(lines[1].segments) == "• [fo]o[t]n[ot]e[s]—[footnotes]: <[note place=\"foot\"]>")
+    #expect(marked(lines[2].segments) == "• [pr]o[ve]n[anc]e—[marks this copy’s owners or keepers added]: <[provenance]>")
   }
 
   @Test func similarLinesArePaired() {
@@ -115,21 +118,13 @@ struct DiffEngineTests {
     #expect(marked(lines[1].segments) == "G[i]l[t]-tooled binding")
   }
 
-  @Test func similarityIsHalfTheLongerLineOrTheShorterInWords() {
-    // "abcd" keeps 2 of "abxy": half the longer, paired; 2 of "abxyz": under.
-    #expect(DiffEngine.similar("abcd", "abxy"))
-    #expect(!DiffEngine.similar("abcd", "abxyz"))
-    // A line that only grew keeps every word of the shorter: paired.
-    #expect(DiffEngine.similar("A gap is a space.", "A gap is a space. A blank line is a space too, counted in lines."))
-    #expect(DiffEngine.similar("", ""))
-    #expect(!DiffEngine.similar("", "a"))
-  }
-
   @Test func aRewrittenPhraseIsMarkedWholeNotByScatteredLetters() {
     let pair = DiffEngine.refine(
       old: "it spans; blank lines left inside a block are <space/>.",
       new: "it spans. Where the page leaves a visible vertical gap within its text, record it with <space/>.")
-    #expect(marked(pair.old) == "it spans[; blank lines left inside] a [block are] <space/>.")
+    // Kept spaces stand unmarked between the words that changed; none of
+    // the words is marked by its letters, the change holding several.
+    #expect(marked(pair.old) == "it spans[;] [blank] [lines] [left] [inside] a [block] [are] <space/>.")
   }
 
   @Test func aLineThatGrewMarksOnlyWhatWasAdded() {
@@ -293,16 +288,17 @@ struct DiffEngineTests {
     #expect(pair.new == [.unchanged("the quick br"), .changed("a"), .unchanged("wn fox")])
   }
 
-  @Test func rewrittenWordIsMarkedWhole() {
+  @Test func oneWordForOneWordIsMarkedByItsLetters() {
+    // No threshold: Myers on the word pair's characters, whatever they share.
     let pair = DiffEngine.refine(old: "an alpha test", new: "an zulu test")
-    #expect(pair.old == [.unchanged("an "), .changed("alpha"), .unchanged(" test")])
-    #expect(pair.new == [.unchanged("an "), .changed("zulu"), .unchanged(" test")])
+    #expect(pair.old == [.unchanged("an "), .changed("a"), .unchanged("l"), .changed("pha"), .unchanged(" test")])
+    #expect(pair.new == [.unchanged("an "), .changed("zu"), .unchanged("l"), .changed("u"), .unchanged(" test")])
   }
 
-  @Test func spaceBetweenChangesIsFolded() {
+  @Test func severalWordsChangedAreMarkedWordByWord() {
     let pair = DiffEngine.refine(old: "the old grey cat", new: "the new white cat")
-    #expect(pair.old == [.unchanged("the "), .changed("old grey"), .unchanged(" cat")])
-    #expect(pair.new == [.unchanged("the "), .changed("new white"), .unchanged(" cat")])
+    #expect(pair.old == [.unchanged("the "), .changed("old"), .unchanged(" "), .changed("grey"), .unchanged(" cat")])
+    #expect(pair.new == [.unchanged("the "), .changed("new"), .unchanged(" "), .changed("white"), .unchanged(" cat")])
   }
 
   @Test func attributeValueChangeIsInsideTheTag() {
@@ -386,8 +382,15 @@ struct DiffEngineTests {
     #expect(marks(lines) == ["-a[⏎]", "-[ ] b", "+a b"])
   }
 
-  @Test func aReflowWithAnEditMarksTheEditToo() {
+  @Test func aReflowWithAnEditPairsItsLines() {
+    // Its text changed, so it is no reflow: its lines are paired one by one.
     let lines = DiffEngine.lines(old: "<w>Been</w> <w>thus</w>", new: "<w>Been</w>\n<w>thys</w>")
-    #expect(marks(lines) == ["-<w>Been</w>[ ]<w>th[u]s</w>", "+<w>Been</w>[⏎]", "+<w>th[y]s</w>"])
+    #expect(marks(lines) == ["-<w>Been</w>[ <w>thus</w>]", "+<w>Been</w>", "+[<w>thys</w>]"])
+  }
+
+  @Test func aDashClosedUpMarksTheSpacesAroundIt() {
+    let pair = DiffEngine.refine(old: "documents — manuscripts", new: "documents—manuscripts")
+    #expect(pair.old == [.unchanged("documents"), .changed(" "), .unchanged("—"), .changed(" "), .unchanged("manuscripts")])
+    #expect(pair.new == [.unchanged("documents—manuscripts")])
   }
 }

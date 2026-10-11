@@ -1,9 +1,11 @@
 /// Differences between two texts, line by line, as a unified diff has them:
-/// the lines both keep, and at each change the old lines then the new. A
-/// changed line paired with the line it replaced also says which of its
-/// characters changed—found word by word first, then within the words that
-/// differ, so a one-letter correction marks one letter and a rewritten phrase
-/// marks the phrase, not a scatter of letters that happen to agree.
+/// the lines both keep, and at each change the old lines then the new. The
+/// standard algorithm, as jsdiff and git's word diff have it, with no
+/// thresholds (user, 2026-10-11): Myers on lines; within a change, the k-th
+/// removed line paired with the k-th added one; within a pair, Myers on its
+/// tokens (words, white space runs, each punctuation mark), the tokens that
+/// differ marked; and where one token was replaced by one of its kind, Myers
+/// on its characters, so a corrected letter is one letter.
 ///
 /// Source text is diffed as its lines of characters; rendered text as its
 /// lines of runs, so a line that changed only its formatting is a changed
@@ -131,9 +133,8 @@ public enum DiffEngine {
   }
 
   /// The lines of both texts in unified order, pairing each change's k-th
-  /// removed line with its k-th inserted one for the note and the
-  /// characters that changed—when the two are `similar`, or parted only by
-  /// something a note names; otherwise each stands whole.
+  /// removed line with its k-th inserted one, always, for the note and the
+  /// tokens that changed; a line past the other side's count stands whole.
   static func unified<C: Sendable>(
     _ a: [C], _ b: [C], keys: ([[UInt8]], [[UInt8]]), text: (C) -> String, note: (C, C) -> Note?
   ) -> [Line<C>] {
@@ -152,14 +153,8 @@ public enum DiffEngine {
       var oldSegments = removed.map { [DiffSegment.changed(text(a[$0]))] }
       var newSegments = added.map { [DiffSegment.changed(text(b[$0]))] }
       for k in 0..<paired {
-        let x = text(a[removed[k]])
-        let y = text(b[added[k]])
-        let parting = note(a[removed[k]], b[added[k]])
-        // Two lines that share little are two changes, not one line edited:
-        // marking their few common letters would only scatter the change.
-        guard parting != nil || similar(x, y) else { continue }
-        notes[k] = parting
-        let pair = refine(old: x, new: y)
+        notes[k] = note(a[removed[k]], b[added[k]])
+        let pair = refine(old: text(a[removed[k]]), new: text(b[added[k]]))
         oldSegments[k] = pair.old
         newSegments[k] = pair.new
       }
@@ -179,10 +174,10 @@ public enum DiffEngine {
       added = []
     }
     /// A change that re-broke its lines—one line now several, or the same
-    /// text indented anew—compared as one block, so only what it put in or
-    /// took out is marked, the line breaks with it: its text alike but for
-    /// white space, or, over a different number of lines, `similar`. Nil
-    /// for any other change, whose lines are paired one by one.
+    /// text indented anew, its text alike but for white space—compared as
+    /// one block, so only the white space and line breaks it put in or took
+    /// out are marked. Nil for any other change, whose lines are paired one
+    /// by one.
     func reflowed() -> [Line<C>]? {
       guard !removed.isEmpty, !added.isEmpty else { return nil }
       let before = join(removed.map { text(a[$0]) }, separator: "\n")
@@ -190,12 +185,7 @@ public enum DiffEngine {
       // The same text, changed only in how it is set (its style, a
       // figure's region, the kind of break): the pairs say how.
       guard Array(before.utf8) != Array(after.utf8) else { return nil }
-      let spacing = withoutSpaces(before) == withoutSpaces(after)
-      guard
-        spacing
-          || (removed.count != added.count && before.utf8.count <= Self.reflowLimit
-            && after.utf8.count <= Self.reflowLimit && similar(before, after))
-      else { return nil }
+      guard withoutSpaces(before) == withoutSpaces(after) else { return nil }
       let pair = refine(old: before, new: after)
       let oldLines = Self.split(pair.old)
       let newLines = Self.split(pair.new)
@@ -204,14 +194,14 @@ public enum DiffEngine {
       for (k, i) in removed.enumerated() {
         var line = Line(
           kind: .removed, content: a[i], segments: oldLines[k].segments, oldNumber: i + 1, newNumber: nil,
-          note: spacing ? .spacing : nil)
+          note: .spacing)
         line.breakChanged = oldLines[k].breakChanged
         block.append(line)
       }
       for (k, j) in added.enumerated() {
         var line = Line(
           kind: .inserted, content: b[j], segments: newLines[k].segments, oldNumber: nil, newNumber: j + 1,
-          note: spacing ? .spacing : nil)
+          note: .spacing)
         line.breakChanged = newLines[k].breakChanged
         block.append(line)
       }
@@ -236,11 +226,6 @@ public enum DiffEngine {
     return out
   }
 
-  /// The longest block, in bytes, a change of a different number of lines
-  /// is compared whole within: past it, the comparison's cost outweighs the
-  /// marks.
-  static let reflowLimit = 4096
-
   /// A block's segments, split back into its lines at its line feeds: each
   /// line's own, and whether the break ending it changed.
   static func split(_ segments: [DiffSegment]) -> [(segments: [DiffSegment], breakChanged: Bool)] {
@@ -263,34 +248,6 @@ public enum DiffEngine {
     }
     out.append((current, false))
     return out
-  }
-
-  /// Whether two lines are close enough to be read as one line edited:
-  /// the characters they share, in order, are at least half of the longer
-  /// one; or the whole words they share hold at least half of the shorter
-  /// one's characters, so a line that only grew keeps its unchanged words
-  /// unmarked (user, 2026-10-11: a sentence added to a prompt line marked
-  /// the whole line). Letters two different words happen to share never
-  /// pair lines by themselves. Below that a removed line and an inserted
-  /// one stand whole.
-  public static func similar(_ old: String, _ new: String) -> Bool {
-    let a = old.unicodeScalars.map { Array($0.utf8) }
-    let b = new.unicodeScalars.map { Array($0.utf8) }
-    let longer = max(a.count, b.count)
-    guard longer > 0 else { return true }
-    var kept = 0
-    for edit in edits(old: a, new: b) {
-      if case .keep = edit { kept += 1 }
-    }
-    if kept * 2 >= longer { return true }
-    let shorter = min(a.count, b.count)
-    guard shorter > 0 else { return false }
-    let words = tokens(old)
-    var keptWords = 0
-    for edit in edits(old: words.map { Array($0.utf8) }, new: tokens(new).map { Array($0.utf8) }) {
-      if case .keep(let i, _) = edit, !isSpace(words[i]) { keptWords += words[i].unicodeScalars.count }
-    }
-    return keptWords * 2 >= shorter
   }
 
   /// The note two differing lines of text earn, if any.
@@ -345,27 +302,54 @@ public enum DiffEngine {
 
   /// Two lines' texts, each split into what the other kept and what changed.
   ///
-  /// Words first—words, runs of white space, and each punctuation mark on
-  /// its own—so a rewritten phrase is one change; then, within a change
-  /// that kept at least half of its longer side's characters, the
-  /// characters, so a corrected letter is one letter. A space kept alone
-  /// between two changes is folded into them.
+  /// Myers on tokens—words, runs of white space, and each punctuation mark
+  /// on its own—each token that differs marked, so a rewritten phrase is
+  /// marked whole; where a change is one token replaced by one of its kind
+  /// (a word by a word, white space by white space), Myers on its
+  /// characters, so a corrected letter is one letter.
   public static func refine(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
     let a = tokens(old)
     let b = tokens(new)
     var before: [DiffSegment] = []
     var after: [DiffSegment] = []
     let script = edits(old: a.map { Array($0.utf8) }, new: b.map { Array($0.utf8) })
-    for group in groups(script, isSpace: { isSpace(a[$0]) }) {
-      switch group {
-      case .keep(let i, _):
+    let all = groups(script)
+    // A change runs from one kept word to the next: white space kept
+    // inside it parts its tokens but does not end it. Only a change that
+    // is one word replaced by one word (or white space by white space) is
+    // marked by its characters.
+    var index = 0
+    while index < all.count {
+      if case .keep(let i, _) = all[index] {
         append(.unchanged(a[i]), to: &before)
         append(.unchanged(a[i]), to: &after)
-      case .change(let removed, let added):
-        let letters = characters(old: join(removed.map { a[$0] }), new: join(added.map { b[$0] }))
+        index += 1
+        continue
+      }
+      var end = index + 1
+      while end + 1 < all.count, case .keep(let i, _) = all[end], isSpace(a[i]), case .change = all[end + 1] {
+        end += 2
+      }
+      let run = all[index..<end]
+      if end == index + 1, case .change(let removed, let added) = all[index], removed.count == 1, added.count == 1,
+        isSpace(a[removed[0]]) == isSpace(b[added[0]])
+      {
+        let letters = characters(old: a[removed[0]], new: b[added[0]])
         for segment in letters.old { append(segment, to: &before) }
         for segment in letters.new { append(segment, to: &after) }
+      } else {
+        for group in run {
+          switch group {
+          case .keep(let i, _):
+            append(.unchanged(a[i]), to: &before)
+            append(.unchanged(a[i]), to: &after)
+          case .change(let removed, let added):
+            for i in removed { append(.changed(a[i]), to: &before) }
+            for j in added { append(.changed(b[j]), to: &after) }
+          }
+        }
       }
+      index = end
     }
     return (before, after)
   }
@@ -398,8 +382,7 @@ public enum DiffEngine {
     return number.utf8.split(separator: 0x2E, omittingEmptySubsequences: false).map(Array.init)
   }
 
-  /// One change, character by character—or whole, when so little of it
-  /// agrees that marking the agreement would only scatter the change.
+  /// One token replaced by another, character by character (Myers).
   static func characters(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
     let a = old.unicodeScalars.map { Array($0.utf8) }
     let b = new.unicodeScalars.map { Array($0.utf8) }
@@ -407,15 +390,6 @@ public enum DiffEngine {
       return (a.isEmpty ? [] : [.changed(old)], b.isEmpty ? [] : [.changed(new)])
     }
     let script = edits(old: a, new: b)
-    var kept = 0
-    for edit in script {
-      if case .keep = edit { kept += 1 }
-    }
-    // Text against text: half of the longer side, or a rewritten phrase
-    // scatters into the letters it happens to share. White space against
-    // white space (a reflow): half of the shorter, so a kept space shows.
-    let measure = isSpace(old) && isSpace(new) ? min(a.count, b.count) : max(a.count, b.count)
-    guard kept * 2 >= measure else { return ([.changed(old)], [.changed(new)]) }
     var before: [DiffSegment] = []
     var after: [DiffSegment] = []
     for edit in script {
@@ -434,39 +408,53 @@ public enum DiffEngine {
 
   /// Words, runs of white space, and each punctuation mark on its own—so
   /// a change of one tag's attribute is a change of that value, not of the
-  /// whole tag.
+  /// whole tag, and a dash closed up ("a — b" → "a—b") is a change of the
+  /// spaces around it. Read by Unicode scalar (`CharacterClass`).
   public static func tokens(_ text: String) -> [String] {
     var out: [String] = []
-    var current: [UInt8] = []
+    var current = ""
     var currentClass = CharacterClass.word
-    for byte in text.utf8 {
-      let kind = CharacterClass(byte)
+    for scalar in text.unicodeScalars {
+      let kind = CharacterClass(scalar.value)
       if case .punctuation = kind {
-        if !current.isEmpty { out.append(String(decoding: current, as: UTF8.self)) }
-        current = []
-        out.append(String(decoding: [byte], as: UTF8.self))
+        if !current.isEmpty { out.append(current) }
+        current = ""
+        out.append(String(scalar))
         continue
       }
       if !current.isEmpty && !kind.continues(currentClass) {
-        out.append(String(decoding: current, as: UTF8.self))
-        current = []
+        out.append(current)
+        current = ""
       }
-      current.append(byte)
+      current.unicodeScalars.append(scalar)
       currentClass = kind
     }
-    if !current.isEmpty { out.append(String(decoding: current, as: UTF8.self)) }
+    if !current.isEmpty { out.append(current) }
     return out
   }
 
+  /// What a character is to the tokenizer, by the Unicode blocks that hold
+  /// it—no Unicode tables, which Embedded Swift does not carry: white space
+  /// (ASCII's, and the General Punctuation and CJK spaces); punctuation
+  /// (ASCII's, Latin-1's, the General Punctuation, Supplemental
+  /// Punctuation, CJK Symbols and Punctuation, and the mathematical white
+  /// brackets ⟦⟧ blocks); every other character a word's.
   enum CharacterClass {
     case space, word, punctuation
 
-    init(_ byte: UInt8) {
-      switch byte {
-      case 0x20, 0x09, 0x0A, 0x0D: self = .space
-      // Letters, digits and every byte of a multi-byte character.
-      case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x5F, 0x80...0xFF: self = .word
-      default: self = .punctuation
+    init(_ value: UInt32) {
+      switch value {
+      case 0x20, 0x09, 0x0A, 0x0D, 0x2000...0x200A, 0x202F, 0x205F, 0x3000: self = .space
+      // Letters, digits, the underscore.
+      case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x5F: self = .word
+      case 0x21...0x7E: self = .punctuation
+      // Latin-1: ¡ « » ¿ § ¶ · and the rest of its punctuation and signs.
+      case 0xA1, 0xA7, 0xAB, 0xB6, 0xB7, 0xBB, 0xBF, 0xD7, 0xF7: self = .punctuation
+      // General Punctuation (dashes, quotes, ellipsis, primes…), its
+      // format characters (zero-width joiners) aside.
+      case 0x2010...0x2027, 0x2030...0x205E: self = .punctuation
+      case 0x2E00...0x2E7F, 0x3001...0x3003, 0x3008...0x3011, 0x3014...0x301F, 0x27E6...0x27EF: self = .punctuation
+      default: self = .word
       }
     }
 
@@ -480,8 +468,8 @@ public enum DiffEngine {
 
   /// Whether a text is white space alone.
   public static func isSpace(_ text: String) -> Bool {
-    for byte in text.utf8 {
-      guard case .space = CharacterClass(byte) else { return false }
+    for scalar in text.unicodeScalars {
+      guard case .space = CharacterClass(scalar.value) else { return false }
     }
     return true
   }
@@ -493,7 +481,7 @@ public enum DiffEngine {
     case change(removed: [Int], added: [Int])
   }
 
-  static func groups(_ script: [Edit], isSpace: (Int) -> Bool) -> [Group] {
+  static func groups(_ script: [Edit]) -> [Group] {
     var out: [Group] = []
     for edit in script {
       switch edit {
@@ -513,23 +501,7 @@ public enum DiffEngine {
         }
       }
     }
-    var folded: [Group] = []
-    var index = 0
-    while index < out.count {
-      if index + 2 < out.count,
-        case .change(let r1, let a1) = out[index],
-        case .keep(let i, let j) = out[index + 1], isSpace(i),
-        case .change(let r2, let a2) = out[index + 2]
-      {
-        // Fold, and look again: the folded change may meet another space.
-        out[index + 2] = .change(removed: r1 + [i] + r2, added: a1 + [j] + a2)
-        index += 2
-        continue
-      }
-      folded.append(out[index])
-      index += 1
-    }
-    return folded
+    return out
   }
 
   static func join(_ parts: [String], separator: String = "") -> String {
