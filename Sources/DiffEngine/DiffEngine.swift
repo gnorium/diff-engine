@@ -111,11 +111,15 @@ public enum DiffEngine {
     case breakKind
   }
 
-  /// Two source texts, line by line.
-  public static func lines(old: String, new: String) -> [Line<String>] {
+  /// Two source texts, line by line. `markup` for XML (TEI): within a
+  /// line its tags are tokens whole, and a change that can slide is put
+  /// where it is balanced XML (`refine`).
+  public static func lines(old: String, new: String, markup: Bool = false) -> [Line<String>] {
     let a = splitLines(old)
     let b = splitLines(new)
-    return unified(a, b, keys: (a.map { Array($0.utf8) }, b.map { Array($0.utf8) }), text: { $0 }) { x, y in
+    return unified(
+      a, b, keys: (a.map { Array($0.utf8) }, b.map { Array($0.utf8) }), text: { $0 }, markup: markup
+    ) { x, y in
       note(x, y)
     }
   }
@@ -136,7 +140,8 @@ public enum DiffEngine {
   /// removed line with its k-th inserted one, always, for the note and the
   /// tokens that changed; a line past the other side's count stands whole.
   static func unified<C: Sendable>(
-    _ a: [C], _ b: [C], keys: ([[UInt8]], [[UInt8]]), text: (C) -> String, note: (C, C) -> Note?
+    _ a: [C], _ b: [C], keys: ([[UInt8]], [[UInt8]]), text: (C) -> String, markup: Bool = false,
+    note: (C, C) -> Note?
   ) -> [Line<C>] {
     var out: [Line<C>] = []
     var removed: [Int] = []
@@ -154,7 +159,7 @@ public enum DiffEngine {
       var newSegments = added.map { [DiffSegment.changed(text(b[$0]))] }
       for k in 0..<paired {
         notes[k] = note(a[removed[k]], b[added[k]])
-        let pair = refine(old: text(a[removed[k]]), new: text(b[added[k]]))
+        let pair = refine(old: text(a[removed[k]]), new: text(b[added[k]]), markup: markup)
         oldSegments[k] = pair.old
         newSegments[k] = pair.new
       }
@@ -186,7 +191,7 @@ public enum DiffEngine {
       // figure's region, the kind of break): the pairs say how.
       guard Array(before.utf8) != Array(after.utf8) else { return nil }
       guard withoutSpaces(before) == withoutSpaces(after) else { return nil }
-      let pair = refine(old: before, new: after)
+      let pair = refine(old: before, new: after, markup: markup)
       let oldLines = Self.split(pair.old)
       let newLines = Self.split(pair.new)
       guard oldLines.count == removed.count, newLines.count == added.count else { return nil }
@@ -311,9 +316,19 @@ public enum DiffEngine {
   /// them, so the spaces and commas kept between changed words do not cut a
   /// changed run into pieces ("pink, red, orange" against "red, orange,
   /// pink" reads as one change, not a word here and a comma there).
-  public static func refine(old: String, new: String) -> (old: [DiffSegment], new: [DiffSegment]) {
-    let a = tokens(old)
-    let b = tokens(new)
+  ///
+  /// `markup` for XML (TEI): a tag is one token whole (`markupTokens`), and
+  /// an insertion or a deletion that can slide among equivalent places is
+  /// put at the earliest where what it marks is balanced XML, every tag it
+  /// opens closed inside it and every tag it closes opened inside it
+  /// (`balanced`); where no place is, it stays where it was (user,
+  /// 2026-10-12). A rule, never a guess: inserting `<w>b</w> ` between
+  /// `<w>a</w> ` and `<w>c</w>` marks ` <w>b</w>`, never `b</w> <w>`.
+  public static func refine(old: String, new: String, markup: Bool = false) -> (
+    old: [DiffSegment], new: [DiffSegment]
+  ) {
+    let a = markup ? markupTokens(old) : tokens(old)
+    let b = markup ? markupTokens(new) : tokens(new)
     var diffs: [(Operation, String)] = []
     for edit in edits(old: a.map { Array($0.utf8) }, new: b.map { Array($0.utf8) }) {
       switch edit {
@@ -324,7 +339,12 @@ public enum DiffEngine {
     }
     var before: [DiffSegment] = []
     var after: [DiffSegment] = []
-    for (operation, text) in cleanupSemantic(merged(diffs)) {
+    // Markup: each edit put where it is balanced before the cleanup weighs
+    // the equalities between edits, and again after it folds some in.
+    let cleaned =
+      markup
+      ? balancedSlides(cleanupSemantic(balancedSlides(merged(diffs)))) : cleanupSemantic(merged(diffs))
+    for (operation, text) in cleaned {
       switch operation {
       case .equal:
         append(.unchanged(text), to: &before)
@@ -482,6 +502,129 @@ public enum DiffEngine {
     }
     if !current.isEmpty { out.append(current) }
     return out
+  }
+
+  /// XML's tokens: each tag, comment or processing instruction whole, from
+  /// its `<` to its `>`; between them, the text's own tokens (`tokens`).
+  public static func markupTokens(_ text: String) -> [String] {
+    var out: [String] = []
+    var run = ""
+    var tag = ""
+    var inTag = false
+    for scalar in text.unicodeScalars {
+      if inTag {
+        tag.unicodeScalars.append(scalar)
+        if scalar.value == 0x3E {
+          out.append(tag)
+          tag = ""
+          inTag = false
+        }
+      } else if scalar.value == 0x3C {
+        if !run.isEmpty { out += tokens(run) }
+        run = ""
+        tag.unicodeScalars.append(scalar)
+        inTag = true
+      } else {
+        run.unicodeScalars.append(scalar)
+      }
+    }
+    if !run.isEmpty { out += tokens(run) }
+    // A `<` never closed is text.
+    if !tag.isEmpty { out += tokens(tag) }
+    return out
+  }
+
+  /// A tag token's kind and name: a start tag, an end tag, or neither (a
+  /// self-closing tag, a comment, a processing instruction, text).
+  enum TagKind {
+    case start([UInt8]), end([UInt8]), other
+  }
+
+  static func tagKind(_ token: String) -> TagKind {
+    let bytes = Array(token.utf8)
+    guard bytes.count >= 3, bytes[0] == 0x3C, bytes[bytes.count - 1] == 0x3E else { return .other }
+    // `<!…>`, `<?…>`, `<…/>`.
+    if bytes[1] == 0x21 || bytes[1] == 0x3F || bytes[bytes.count - 2] == 0x2F { return .other }
+    let closing = bytes[1] == 0x2F
+    var name: [UInt8] = []
+    for byte in bytes[(closing ? 2 : 1)..<(bytes.count - 1)] {
+      if byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D || byte == 0x2F { break }
+      name.append(byte)
+    }
+    guard !name.isEmpty else { return .other }
+    return closing ? .end(name) : .start(name)
+  }
+
+  /// Whether a run of tokens is balanced XML: every start tag in it closed
+  /// in it, in order, and every end tag in it opened in it.
+  static func balanced(_ run: [String]) -> Bool {
+    var open: [[UInt8]] = []
+    for token in run {
+      switch tagKind(token) {
+      case .start(let name): open.append(name)
+      case .end(let name):
+        guard let last = open.last, last == name else { return false }
+        open.removeLast()
+      case .other: break
+      }
+    }
+    return open.isEmpty
+  }
+
+  static func same(_ x: String, _ y: String) -> Bool {
+    Array(x.utf8) == Array(y.utf8)
+  }
+
+  /// Each insertion or deletion standing alone between two equalities,
+  /// slid by whole tokens to the earliest place where it is balanced XML;
+  /// left where it was if none is.
+  static func balancedSlides(_ input: [(Operation, String)]) -> [(Operation, String)] {
+    var diffs = input
+    var index = 0
+    while index < diffs.count {
+      let operation = diffs[index].0
+      let before = index > 0 ? diffs[index - 1] : nil
+      let after = index + 1 < diffs.count ? diffs[index + 1] : nil
+      let alone =
+        operation != .equal && (before == nil || before!.0 == .equal) && (after == nil || after!.0 == .equal)
+      guard alone else {
+        index += 1
+        continue
+      }
+      let left = before.map { markupTokens($0.1) } ?? []
+      let edit = markupTokens(diffs[index].1)
+      let right = after.map { markupTokens($0.1) } ?? []
+      // The whole stretch the edit can move in: its left equality, itself,
+      // its right one; each place an offset into it.
+      let stretch = left + edit + right
+      let length = edit.count
+      var lowest = left.count
+      while lowest > 0 && same(stretch[lowest - 1], stretch[lowest - 1 + length]) { lowest -= 1 }
+      var highest = left.count
+      while highest + length < stretch.count && same(stretch[highest], stretch[highest + length]) { highest += 1 }
+      var chosen: Int? = nil
+      var start = lowest
+      while start <= highest && chosen == nil {
+        if balanced(Array(stretch[start..<(start + length)])) { chosen = start }
+        start += 1
+      }
+      guard let place = chosen, place != left.count else {
+        index += 1
+        continue
+      }
+      let newLeft = join(Array(stretch[0..<place]))
+      let newEdit = join(Array(stretch[place..<(place + length)]))
+      let newRight = join(Array(stretch[(place + length)...]))
+      var replacement: [(Operation, String)] = []
+      if before != nil || !newLeft.isEmpty { replacement.append((.equal, newLeft)) }
+      replacement.append((operation, newEdit))
+      if after != nil || !newRight.isEmpty { replacement.append((.equal, newRight)) }
+      let from = before == nil ? index : index - 1
+      let to = after == nil ? index : index + 1
+      diffs.replaceSubrange(from...to, with: replacement)
+      index = from + replacement.count - (after == nil ? 0 : 1)
+    }
+    return merged(diffs)
   }
 
   /// What a character is to the tokenizer, by the Unicode blocks that hold

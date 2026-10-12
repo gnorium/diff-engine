@@ -409,4 +409,63 @@ struct DiffEngineTests {
     #expect(pair.old == [.unchanged("documents"), .changed(" — "), .unchanged("manuscripts")])
     #expect(pair.new == [.unchanged("documents"), .changed("—"), .unchanged("manuscripts")])
   }
+
+  // MARK: - Markup
+
+  @Test func anInsertionIsMarkedWhereItIsBalancedXML() {
+    // The sample (user, 2026-10-12): `thoroughly</w> <w>` read the same but
+    // cut across tags; the earliest balanced place is ` <w>thoroughly</w>`.
+    let old = "<l><w>The</w> <w>text</w> <w>has</w> <w>in</w> <w>the</w> <w>meantime</w> <w>been</w> <w>revised</w></l>"
+    let new =
+      "<l><w>The</w> <w>text</w> <w>since</w> <w>has</w> <w>in</w> <w>the</w> <w>meantime</w> <w>been</w> <w>thoroughly</w> <w>revised</w></l>"
+    let pair = DiffEngine.refine(old: old, new: new, markup: true)
+    #expect(marked(pair.old) == old)
+    #expect(
+      marked(pair.new)
+        == "<l><w>The</w> <w>text</w>[ <w>since</w>] <w>has</w> <w>in</w> <w>the</w> <w>meantime</w> <w>been</w>[ <w>thoroughly</w>] <w>revised</w></l>"
+    )
+  }
+
+  @Test func aDeletedElementIsMarkedWhole() {
+    let pair = DiffEngine.refine(old: "<p>a <hi>b</hi> c</p>", new: "<p>a c</p>", markup: true)
+    #expect(marked(pair.old) == "<p>a[ <hi>b</hi>] c</p>")
+    #expect(marked(pair.new) == "<p>a c</p>")
+  }
+
+  @Test func aTagWithAnAttributeAddedIsChangedWhole() {
+    // A tag is one token: its new attribute marks the tag, never part of it.
+    let pair = DiffEngine.refine(old: "<hi>x</hi>", new: "<hi rend=\"italic\">x</hi>", markup: true)
+    #expect(marked(pair.old) == "[<hi>]x</hi>")
+    #expect(marked(pair.new) == "[<hi rend=\"italic\">]x</hi>")
+  }
+
+  @Test func anInsertionWithNoBalancedPlaceStaysWhereItWas() {
+    // Every place `<x>a` or `a<x>` can take opens a tag it never closes:
+    // the diff's own choice stands.
+    let old = "<x>a<x>"
+    let new = "<x>a<x>a<x>"
+    let balancedPair = DiffEngine.refine(old: old, new: new, markup: true)
+    let plain = DiffEngine.cleanupSemantic(
+      DiffEngine.merged(
+        DiffEngine.edits(
+          old: DiffEngine.markupTokens(old).map { Array($0.utf8) },
+          new: DiffEngine.markupTokens(new).map { Array($0.utf8) }
+        ).map { edit -> (DiffEngine.Operation, String) in
+          switch edit {
+          case .keep(let i, _): return (.equal, DiffEngine.markupTokens(old)[i])
+          case .delete(let i): return (.delete, DiffEngine.markupTokens(old)[i])
+          case .insert(let j): return (.insert, DiffEngine.markupTokens(new)[j])
+          }
+        }))
+    let expected = plain.filter { $0.0 != .delete }.map { $0.0 == .equal ? $0.1 : "[\($0.1)]" }.joined()
+    #expect(marked(balancedPair.new) == expected)
+    #expect(marked(balancedPair.new).contains("["))
+  }
+
+  @Test func plainTextIsUnaffected() {
+    // Without `markup`, a tag's attribute value is its own token, as before.
+    let pair = DiffEngine.refine(old: "<hi rend=\"a\">x</hi>", new: "<hi rend=\"b\">x</hi>")
+    #expect(marked(pair.new) == "<hi rend=\"[b]\">x</hi>")
+  }
 }
+
