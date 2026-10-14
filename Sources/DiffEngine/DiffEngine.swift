@@ -1,8 +1,9 @@
 /// Differences between two texts, line by line, as a unified diff has them:
 /// the lines both keep, and at each change the old lines then the new. The
 /// standard algorithm, as jsdiff and git's word diff have it, with no
-/// thresholds (user, 2026-10-11): Myers on lines; within a change, the k-th
-/// removed line paired with the k-th added one; within a pair, Myers on its
+/// thresholds (user, 2026-10-11): Myers on lines; within a change, each
+/// removed line paired with the added one most like it, in order (`pairs`),
+/// the rest k-th with k-th; within a pair, Myers on its
 /// tokens (words, white space runs, each punctuation mark), the tokens that
 /// differ marked whole, and diff-match-patch's semantic cleanup folding the
 /// short equalities between changes into them.
@@ -136,8 +137,8 @@ public enum DiffEngine {
     }
   }
 
-  /// The lines of both texts in unified order, pairing each change's k-th
-  /// removed line with its k-th inserted one, always, for the note and the
+  /// The lines of both texts in unified order, pairing each change's
+  /// removed lines with its inserted ones (`pairs`), for the note and the
   /// tokens that changed; a line past the other side's count stands whole.
   static func unified<C: Sendable>(
     _ a: [C], _ b: [C], keys: ([[UInt8]], [[UInt8]]), text: (C) -> String, markup: Bool = false,
@@ -153,27 +154,29 @@ public enum DiffEngine {
         added = []
         return
       }
-      let paired = min(removed.count, added.count)
-      var notes = [Note?](repeating: nil, count: max(removed.count, added.count))
+      var oldNotes = [Note?](repeating: nil, count: removed.count)
+      var newNotes = [Note?](repeating: nil, count: added.count)
       var oldSegments = removed.map { [DiffSegment.changed(text(a[$0]))] }
       var newSegments = added.map { [DiffSegment.changed(text(b[$0]))] }
-      for k in 0..<paired {
-        notes[k] = note(a[removed[k]], b[added[k]])
-        let pair = refine(old: text(a[removed[k]]), new: text(b[added[k]]), markup: markup)
+      for (k, l) in pairs(removed.map { text(a[$0]) }, added.map { text(b[$0]) }, markup: markup) {
+        let n = note(a[removed[k]], b[added[l]])
+        oldNotes[k] = n
+        newNotes[l] = n
+        let pair = refine(old: text(a[removed[k]]), new: text(b[added[l]]), markup: markup)
         oldSegments[k] = pair.old
-        newSegments[k] = pair.new
+        newSegments[l] = pair.new
       }
       for (k, i) in removed.enumerated() {
         out.append(
           Line(
             kind: .removed, content: a[i], segments: oldSegments[k], oldNumber: i + 1, newNumber: nil,
-            note: notes[k]))
+            note: oldNotes[k]))
       }
       for (k, j) in added.enumerated() {
         out.append(
           Line(
             kind: .inserted, content: b[j], segments: newSegments[k], oldNumber: nil, newNumber: j + 1,
-            note: notes[k]))
+            note: newNotes[k]))
       }
       removed = []
       added = []
@@ -229,6 +232,108 @@ public enum DiffEngine {
     }
     flush()
     return out
+  }
+
+  /// Which removed line of a change is paired with which added one, in
+  /// order (user, 2026-10-14): each line with the one most like it, as
+  /// GitHub's and Xcode's word diffs pair them, so a line put in before a
+  /// changed one never takes its partner. The order-keeping alignment of
+  /// the two runs that shares the most tokens (a line's likeness to another
+  /// is the Dice coefficient of their tokens, white space aside); the lines
+  /// it leaves between two pairs then paired k-th with k-th, as before, so
+  /// two lines sharing no token—one dash for another—still pair. A change
+  /// too large to align (over `alignable` pairs of lines) is paired k-th
+  /// with k-th throughout.
+  static func pairs(_ removed: [String], _ added: [String], markup: Bool) -> [(Int, Int)] {
+    guard !removed.isEmpty, !added.isEmpty else { return [] }
+    var anchors: [(Int, Int)] = []
+    if removed.count * added.count <= alignable, removed.count > 1 || added.count > 1 {
+      let oldBags = removed.map { bag($0, markup: markup) }
+      let newBags = added.map { bag($0, markup: markup) }
+      let width = added.count + 1
+      var score = [Double](repeating: 0, count: (removed.count + 1) * width)
+      var like = [Double](repeating: 0, count: removed.count * added.count)
+      for i in 0..<removed.count {
+        for j in 0..<added.count {
+          like[i * added.count + j] = likeness(oldBags[i], newBags[j])
+        }
+      }
+      for i in 1...removed.count {
+        for j in 1...added.count {
+          var best = max(score[(i - 1) * width + j], score[i * width + j - 1])
+          let together = like[(i - 1) * added.count + j - 1]
+          if together > 0 { best = max(best, score[(i - 1) * width + j - 1] + together) }
+          score[i * width + j] = best
+        }
+      }
+      var i = removed.count
+      var j = added.count
+      while i > 0 && j > 0 {
+        let together = like[(i - 1) * added.count + j - 1]
+        if together > 0 && score[i * width + j] == score[(i - 1) * width + j - 1] + together {
+          anchors.append((i - 1, j - 1))
+          i -= 1
+          j -= 1
+        } else if score[i * width + j] == score[(i - 1) * width + j] {
+          i -= 1
+        } else {
+          j -= 1
+        }
+      }
+      anchors.reverse()
+    }
+    // Between the anchors (and before the first, after the last), the
+    // lines left paired in order.
+    var out: [(Int, Int)] = []
+    var from = (0, 0)
+    for anchor in anchors + [(removed.count, added.count)] {
+      let count = min(anchor.0 - from.0, anchor.1 - from.1)
+      for k in 0..<max(0, count) { out.append((from.0 + k, from.1 + k)) }
+      if anchor.0 < removed.count { out.append(anchor) }
+      from = (anchor.0 + 1, anchor.1 + 1)
+    }
+    return out
+  }
+
+  /// The most pairs of lines a change is aligned over (`pairs`): a
+  /// thousand lines out and a thousand in is a million likenesses.
+  static let alignable = 250_000
+
+  /// A line's tokens, white space aside, each as its bytes' FNV-1a hash,
+  /// sorted: what `likeness` counts in common.
+  static func bag(_ text: String, markup: Bool) -> [UInt64] {
+    var out: [UInt64] = []
+    for token in markup ? markupTokens(text) : tokens(text) where !isSpace(token) {
+      var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+      for byte in token.utf8 {
+        hash ^= UInt64(byte)
+        hash = hash &* 0x0000_0100_0000_01B3
+      }
+      out.append(hash)
+    }
+    out.sort()
+    return out
+  }
+
+  /// The Dice coefficient of two lines' tokens: twice the tokens they
+  /// share over how many both have, 0 to 1.
+  static func likeness(_ a: [UInt64], _ b: [UInt64]) -> Double {
+    guard !a.isEmpty || !b.isEmpty else { return 0 }
+    var i = 0
+    var j = 0
+    var shared = 0
+    while i < a.count && j < b.count {
+      if a[i] == b[j] {
+        shared += 1
+        i += 1
+        j += 1
+      } else if a[i] < b[j] {
+        i += 1
+      } else {
+        j += 1
+      }
+    }
+    return Double(2 * shared) / Double(a.count + b.count)
   }
 
   /// A block's segments, split back into its lines at its line feeds: each

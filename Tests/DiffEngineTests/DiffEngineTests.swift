@@ -144,6 +144,28 @@ struct DiffEngineTests {
     #expect(marked(lines[1].segments) == "the quick [fox]")
   }
 
+  @Test func aLinePutInBeforeAChangedOneLeavesItsPartner() {
+    // A bullet added above one whose word changed: the changed bullet is
+    // paired with its old self, its one word marked; the new one is whole.
+    let lines = DiffEngine.lines(
+      old: "- Keep every line break as printed on the page.",
+      new: "- Record the provenance of this copy.\n- Keep every line end as printed on the page.")
+    #expect(kinds(lines) == "-++")
+    #expect(marked(lines[0].segments) == "- Keep every line [break] as printed on the page.")
+    #expect(marked(lines[1].segments) == "[- Record the provenance of this copy.]")
+    #expect(marked(lines[2].segments) == "- Keep every line [end] as printed on the page.")
+  }
+
+  @Test func reorderedChangesPairByLikeness() {
+    let lines = DiffEngine.lines(
+      old: "alpha beta gamma delta\nthe quick brown fox jumps",
+      new: "a new opening line entirely\nalpha beta gamma epsilon\nthe quick brown fox leaps")
+    #expect(kinds(lines) == "--+++")
+    #expect(marked(lines[0].segments) == "alpha beta gamma [delta]")
+    #expect(marked(lines[3].segments) == "alpha beta gamma [epsilon]")
+    #expect(marked(lines[4].segments) == "the quick brown fox [leaps]")
+  }
+
   @Test func lookalikeShortLinesStillPair() {
     let lines = DiffEngine.lines(old: "\u{2013}", new: "\u{2014}")
     guard case .lookalike? = lines[0].note else {
